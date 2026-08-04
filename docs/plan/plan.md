@@ -4,53 +4,76 @@
 
 Runs NEEDLE workers as pods on Rackspace Spot compute that [warden](https://git.ardenone.com/jedarden/warden) elastically scales. warden solves "how much compute exists"; needle-pod solves "what runs on it."
 
+This is deliberately an experiment. The first deployment exists to find out how NEEDLE workers actually behave in Kubernetes — under preemption, restart, and memory pressure — not to reach scale quickly. Observability is therefore sequenced *ahead* of the first worker rather than after it.
+
 ## Architecture
 
 Two independent scaling axes that have to work together:
 
-- **warden** scales node **capacity** — VM count on the `agent-sandbox` cloudspace's node pool, within its policy envelope (max 10 nodes, `ch.vs1.large-ord`, bid ≤ 0.01).
-- **needle-pod** scales worker **pods** on top of that capacity — a Deployment's replica count. More replicas without more warden-scaled capacity just means pods stuck Pending.
+- **warden** scales node **capacity** — VM count on the `agent-sandbox` cloudspace's node pool, within its policy envelope (max 10 nodes, `ch.vs1.large-ord`, bid ≤ 0.01, confirmed matching the real pool).
+- **needle-pod** scales worker **pods** on top of that capacity. More replicas without more warden-scaled capacity just means pods stuck Pending.
 
-Target cluster: `agent-sandbox` (Rackspace Spot, us-central-ord-1, org `apexalgo-agent`, class `ch.vs1.large-ord`). It already exists as a bare cloudspace — warden already manages its node pool — but it is **not yet bootstrapped** as a GitOps-managed cluster in the sense every other cluster in this fleet is. No kubeconfig for it exists on this box yet; that's the literal first blocker.
+Target cluster: `agent-sandbox` (Rackspace Spot, ORD, org `apexalgo-agent`). It is Ready and reachable — access from the EX44 is credential-free, via an exec-credential kubeconfig that mints a 24h token from OpenBao per invocation. What it is **not** is a GitOps-managed cluster: it has no ArgoCD registration, no Tailscale operator, no external-secrets. Full observed state in `../research/agent-sandbox-cluster-state.md`.
 
-Deployment shape: a `Deployment` (never `Job`/`CronJob` — hard-banned repo-wide) running `needle run` as the long-lived internal process, mirroring the existing bare-metal tmux pattern conceptually. The difference from bare metal: one worker = one pod, not one worker = one tmux session sharing a host's disk and process tree with every other worker. That's a real upside — it eliminates the shared-worktree collision class of bugs that plagues the lab fleet today, at the cost of losing the free atomicity a single shared SQLite file gives claims (see Open Questions).
+Deployment shape: a `Deployment` running `needle run` as the long-lived internal process (never `Job`/`CronJob` — banned repo-wide). One worker per pod, rather than one worker per tmux session sharing a host's disk and process tree. That eliminates the shared-worktree collision class that plagues the lab fleet, at the cost of the free claim atomicity a single shared SQLite file provides — see Open Questions.
 
 ## Components
 
-1. **Cluster bootstrap** (prerequisite, not really this repo's code, but blocking everything else)
-   - Fetch/generate a kubeconfig for `agent-sandbox` from the Spot UI.
-   - Deploy the Tailscale operator (needs its own OAuth client/authkey secret).
-   - Deploy external-secrets + a `ClusterSecretStore` pointed at OpenBao, via the same tailnet-egress-Service pattern `ord-devimprint`/`iad-ci`/`iad-options` already use to reach `traefik-rs-manager:8200`.
-   - Register the cluster with rs-manager's ArgoCD (bearer token in OpenBao + `ExternalSecret`, matching the existing `cluster-<name>` pattern in `k8s/rs-manager/argocd/`).
-   - Decide whether Traefik/cert-manager are needed at all — workers are outbound-only agents, not services being served, so this cluster may not need an ingress path the way every other cluster does.
-   - Write `k8s/agent-sandbox/CLAUDE.md` with real node-shape/allocatable numbers per the fleet-wide "Cluster Sizing" convention, once the cluster is reachable.
+1. **Cluster bootstrap** (prerequisite; blocks everything else)
+   Registration with rs-manager ArgoCD, Tailscale operator, external-secrets against rs-manager OpenBao, cert-manager, and Traefik as the cluster's single ingress connection point. Concrete deliverables, ordering, and the one-time credential steps are in `../notes/cluster-bootstrap-deliverables.md`; the fleet patterns being copied are catalogued in `../research/fleet-bootstrap-patterns.md`.
 
-2. **Worker runtime image** — no image exists today (only NEEDLE's own CI-build Dockerfiles, not a worker runtime). Needs: `needle` binary, an agent adapter config, the coding-agent CLI(s) the adapter shells out to (`claude`, and potentially `codex`/`opencode`/`pi`/`goose`), git, and a local toolchain that's "fast enough to iterate" — not full, since heavy/final verification should route through iad-ci the same way `cargo-remote` already does for Rust today (see Open Questions on how far that pattern extends). Built the same way warden was: `VERSION` file, WorkflowTemplate on iad-ci, kaniko build, semver tag, `imagePullSecrets`.
+2. **Observability** (before the first worker)
+   A local VictoriaLogs instance behind Traefik, with NEEDLE's existing JSONL telemetry routed to stdout for the bundled Vector agent to collect. Rotation is bounded at four layers. See `../notes/deployment-shape-and-lifecycle.md`.
 
-3. **Credential wiring** — per-agent-CLI auth (Anthropic subscription, GLM proxy token, and whatever `codex`/`opencode`/`goose` each require) via OpenBao + `ExternalSecret`, same shape as warden's. Git push credentials TBD pending Component 5.
+3. **Worker runtime image**
+   A single fat image — needle, `claude`, `git`, `bf`, and toolchains — with versions baked as a floor and declared as a ceiling in a ConfigMap. Built by a `needle-pod-build` WorkflowTemplate on iad-ci, digest-pinned, rebuilt nightly with no version-detection CI. Full rationale in `../notes/image-and-update-strategy.md`.
 
-4. **Bead-store / claim coordination across pods** — the hardest unsolved problem, no chosen design yet. See Open Questions.
+4. **Credential wiring**
+   Agent CLI auth and a git push path via OpenBao + `ExternalSecret`, using the Kubernetes-auth pattern already proven on this cluster. Plus a Docker Hub `imagePullSecret`.
 
-5. **NEEDLE's dedicated-committer mechanism** — memory says NEEDLE already routes commits through a dedicated committer rather than every worker pushing directly, but the actual implementation was never found/documented. Needs tracing down in the NEEDLE source before deciding whether worker pods need their own git push credentials at all.
+5. **Bead-store / claim coordination across pods**
+   The one genuinely unsolved problem. No chosen design. See Open Questions.
 
-6. **Per-language CI verification templates** — only `rust-verify` exists today (the one `cargo-remote` submits to). If the offload-heavy-verification-to-iad-ci strategy is adopted for other languages, equivalent templates need to be built for Go/Node/Python before those repos' beads are safe to hand to a needle-pod worker.
+6. **NEEDLE's committer path**
+   Whether worker pods need their own git push credentials depends on how commits actually reach a remote. The 07-30 fleet audit found pushing delegated to the dispatched agent by prompt text alone, with a verification gate whose data source nothing writes — so assume workers need push credentials until proven otherwise.
+
+7. **Per-language CI verification templates**
+   Only `rust-verify` exists today. Equivalents for Go/Node/Python are needed before those repos' beads are safe to hand to a worker, *if* the offload strategy is extended.
 
 ## Data Models
 
-None invented here — needle-pod consumes NEEDLE's existing bead schema (`.beads/beads.db` / `issues.jsonl`) as-is. Whatever changes if Component 4 lands a new coordination model belongs in NEEDLE's own repo, not here.
+None invented here — needle-pod consumes NEEDLE's existing bead schema (`.beads/beads.db` / `issues.jsonl`) as-is. Anything Component 5 changes belongs in NEEDLE's repo, not this one.
 
 ## Implementation Phases
 
-- [ ] Phase 0: Bootstrap `agent-sandbox` as a full GitOps cluster (tailnet, ArgoCD registration, ESO/OpenBao) — see Component 1
-- [ ] Phase 1: Resolve the bead-store coordination model — blocking; nothing past a single-worker proof-of-concept is safe without this
-- [ ] Phase 2: Build the worker runtime image + its CI pipeline
-- [ ] Phase 3: Credential wiring (agent CLIs + git push path)
-- [ ] Phase 4: First Deployment manifest in `declarative-config` (`k8s/agent-sandbox/needle-pod/`), single replica, prove one worker end-to-end against a real repo
-- [ ] Phase 5: Scale out — multiple replicas, exercise warden's node scaling under real load, extend CI-offload to additional languages as needed
+Sequenced so that the first worker runs against working telemetry, and so that the unsolved coordination problem blocks only scale-out.
+
+- [ ] **M0 — Bootstrap `agent-sandbox` as a GitOps cluster.** ArgoCD registration (with the real cluster CA, not `insecure`), ApplicationSet, app-of-apps, Tailscale operator, external-secrets, cert-manager, Traefik.
+- [ ] **M1 — Observability, before any worker.** Local VictoriaLogs behind Traefik with time *and* disk bounded retention; worker JSONL to stdout; OTLP disabled initially. Verify from the EX44 that a throwaway pod's events are queryable *before* M4.
+- [ ] **M2 — Worker runtime image + CI pipeline.**
+- [ ] **M3 — Credential wiring.**
+- [ ] **M4 — One worker, watched.** Single replica, `emptyDir`, one real repo. Requires the empty-pool idle loop and a decision on SIGTERM drain first.
+- [ ] **M5 — Scale out.** Multiple replicas, warden node scaling under real load. **Gated on the coordination model.**
+
+Manifests already written into `declarative-config` (`k8s/agent-sandbox/`): `traefik/`, `cert-manager/`, `monitoring/`. They are inert until the M0 ApplicationSet and app-of-apps exist.
 
 ## Open Questions
 
-- **Single fat worker image, or per-language-cohort images?** A single image (node+go+rust+python) preserves full cross-repo roaming — NEEDLE's standing default, not an incidental preference — at the cost of image size. Splitting by language keeps images small but requires pinning each Deployment's `explore.workspaces` to that language's repo subset, sacrificing cross-language roaming. Leaning toward cohort-pinning unless cross-language roaming turns out to matter more than image size in practice.
-- **Bead claim coordination with no shared local disk.** Rackspace Spot's Cinder-backed storage classes are effectively ReadWriteOnce (worth directly verifying, not just assuming), so a shared-mount SQLite file across pods is unlikely to work, and SQLite over a network filesystem is a known corruption risk regardless. The alternative — each pod clones its own repo + local `beads.db`, reconciling via git sync — trades instant-atomic claims for eventually-consistent ones, which would make the *already-documented* duplicate-claim races (two workers claiming the same bead) worse, not better. No design chosen yet.
-- **How far does CI-offload actually reduce the local toolchain requirement?** The existing `cargo-remote` wrapper only auto-submits to iad-ci on a clean tree with no uncommitted changes — a condition a worker mid-edit almost never satisfies. So offload helps with a final, heavy verification pass, but the interactive edit-compile-test loop still needs a real local toolchain. Offloading narrows what has to be baked into the image; it doesn't eliminate the need.
-- **Does agent-sandbox need Traefik/cert-manager at all?** Workers are outbound-only (dial out to git, OpenBao, agent APIs) — unless a status/metrics dashboard is wanted later, this cluster may not need the ingress stack every other cluster carries.
+### Resolved
+
+- **Single fat worker image, or per-language cohorts?** → **Fat image.** Nodes carry ~96 GiB ephemeral, so image size is affordable, and cross-repo roaming — NEEDLE's standing default — is preserved. Cohort-splitting stays available as a later optimization.
+
+- **Does agent-sandbox need Traefik/cert-manager at all?** → **Yes, both.** The earlier reasoning — that workers are outbound-only, so no ingress stack is needed — was wrong. Traefik is the cluster's *single ingress connection point*: one path to control and monitor, and everything else multiplexes behind it. Exposing a service directly with `tailscale.com/expose` spends the cluster's one exposure and forces a second, separately-monitored proxy the moment anything else needs ingress. Every `vpn` IngressRoute then requires a real Certificate — no wildcard fallback exists in this fleet — which makes cert-manager, the ClusterIssuer, the Cloudflare DNS01 token, and therefore external-secrets all mandatory.
+
+- **How to keep needle / claude / codex current without a rebuild treadmill?** → Baked floor, ConfigMap-declared ceiling, Reloader-triggered restart, nightly scheduled rebuild. No version-detection CI. needle self-updates through its existing hot-reload; the agent CLIs update by probe-gated symlink flip. See `../notes/image-and-update-strategy.md`.
+
+### Still open
+
+- **Bead claim coordination with no shared local disk.** The hard one, and the gate on M5. Confirmed empirically rather than assumed: `~/.needle/fabric.db` is telemetry only (sessions, metrics, error history), so claim atomicity today comes *entirely* from every worker on a host opening the same `.beads/beads.db`. One-worker-per-pod destroys that and nothing in NEEDLE compensates. Candidate directions, in current order of preference:
+  1. **Partition by workspace** — each pod owns a disjoint repo set, so cross-pod claims never arise. Cheapest, ships immediately, costs roaming.
+  2. **External claim broker** — a small service outside the pods. This is what every product surveyed in `../research/isolated-agent-dev-images.md` converged on: coordination in the control plane, never inside the isolated boundary.
+  3. **Git-as-database** (Gas Town) — most interesting, but eventually-consistent claims would worsen the already-documented duplicate-claim races.
+
+- **How far does CI-offload actually reduce the local toolchain requirement?** Partially informed: `cargo-remote` only auto-submits on a clean tree, which a worker mid-edit rarely satisfies. Offload narrows what must be baked into the image for *final* verification; it does not remove the need for a real local toolchain in the edit-compile-test loop.
+
+- **Does `mend.max_log_files` get implemented upstream, or does needle-pod bound logs itself?** The config key exists in `config.yaml` but appears nowhere in NEEDLE's source; nothing prunes worker JSONL (2,046 files / 80 MB in ~3 days on the EX44). Short term, bound it at the pod. Long term this belongs in NEEDLE.
