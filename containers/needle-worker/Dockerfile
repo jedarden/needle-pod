@@ -30,7 +30,13 @@ ARG CODEX_VERSION=
 ARG OPENCODE_VERSION=
 ARG PI_VERSION=
 ARG AIDER_VERSION=
-ARG BEAD_FORGE_REF=main
+# Pinned, NOT main. Building from bead-forge HEAD produced a bf that imports
+# beads but never creates the critical_path_cache / blocked_issues_cache
+# tables, so every `bf ready` fails with "no such table" and the worker finds
+# no work. schema.rs is mid-refactor: this commit references
+# critical_path_cache 11 times, HEAD only 6. Verified working; bump
+# deliberately, after testing `bf ready` on a fresh clone.
+ARG BEAD_FORGE_REF=9cd859023d793a00775bd8f300b9b1a62a1e0f47
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -154,9 +160,11 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
 # requires auth and the GitHub mirror has no release assets — so it is built
 # from the public mirror. Kept in its own layer so a bf bump does not rebuild
 # the toolchains above it.
+# Cloned full then checked out, because BEAD_FORGE_REF is a commit SHA and
+# `git clone --branch` only accepts branches and tags.
 RUN set -eux; \
-    git clone --depth 1 --branch "${BEAD_FORGE_REF}" \
-        https://github.com/jedarden/bead-forge.git /tmp/bead-forge; \
+    git clone https://github.com/jedarden/bead-forge.git /tmp/bead-forge; \
+    git -C /tmp/bead-forge checkout --quiet "${BEAD_FORGE_REF}"; \
     cargo install --locked --path /tmp/bead-forge --root /usr/local; \
     rm -rf /tmp/bead-forge "$CARGO_HOME"/registry "$CARGO_HOME"/git; \
     bf --version

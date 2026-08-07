@@ -78,6 +78,11 @@ class Provider:
 
         self.kind = (get("KIND") or "anthropic").lower()
         self.base_url = get("BASE_URL")
+        # A provider commonly serves BOTH wire protocols at different paths —
+        # Z.AI exposes an Anthropic-shaped API at /api/anthropic and an
+        # OpenAI-shaped one at /api/paas/v4. Harnesses that only speak the
+        # OpenAI wire need the second URL; a single base_url cannot express it.
+        self.openai_base_url = get("OPENAI_BASE_URL")
         self.model = get("MODEL")
         self.small_model = get("SMALL_MODEL") or self.model
         self.display_name = get("DISPLAY_NAME") or name
@@ -99,10 +104,23 @@ class Provider:
 
     @property
     def chat_completions_url(self) -> str:
-        """OpenAI-wire base URL, for harnesses that only speak that shape."""
-        if self.base_url:
+        """OpenAI-wire base URL, for harnesses that only speak that shape.
+
+        Falls back to base_url only when the provider is openai-kind. For an
+        anthropic-kind provider, base_url points at an Anthropic-shaped path
+        and handing it to an OpenAI-wire client produces 404s at dispatch —
+        so OPENAI_BASE_URL must be set explicitly for those harnesses to work.
+        """
+        if self.openai_base_url:
+            return self.openai_base_url
+        if self.kind == "openai" and self.base_url:
             return self.base_url
         return "https://api.openai.com/v1" if self.kind == "openai" else "https://api.anthropic.com/v1"
+
+    @property
+    def has_openai_wire(self) -> bool:
+        """Whether an OpenAI-wire endpoint is actually known for this provider."""
+        return bool(self.openai_base_url) or self.kind == "openai"
 
 
 # --------------------------------------------------------------------------
@@ -184,13 +202,22 @@ def configure_codex(providers: list[Provider], default: Provider) -> None:
         "",
     ]
     for p in providers:
-        wire = "chat" if p.kind == "openai" else "anthropic"
+        # Codex 0.147 accepts ONLY wire_api = "responses"; "chat" is rejected
+        # with "no longer supported" and "anthropic" was never a variant. That
+        # means codex requires an endpoint implementing OpenAI's Responses API,
+        # which most BYOK/subscription gateways do not. If the provider has no
+        # OpenAI-wire endpoint at all, say so rather than emitting a table that
+        # will 404 at dispatch.
+        if not p.has_openai_wire:
+            log("warn", "codex needs an OpenAI Responses-API endpoint; "
+                        "provider has no OpenAI-wire URL, so this provider will not dispatch",
+                provider=p.name, hint=f"set {p.var_prefix}_OPENAI_BASE_URL")
         lines += [
             f"[model_providers.{p.name}]",
             f"name = {toml_str(p.display_name)}",
             f"base_url = {toml_str(p.chat_completions_url)}",
             f"env_key = {toml_str(p.token_var)}",
-            f"wire_api = {toml_str(wire)}",
+            'wire_api = "responses"',
             "",
         ]
     write(HOME / ".codex" / "config.toml", "\n".join(lines))
