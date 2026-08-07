@@ -1,0 +1,40 @@
+# NEEDLE adapter — opencode against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
+#
+# Rendered by needle-pod at container start. Do not edit in-pod.
+#
+# Provider wiring lives in ~/.config/opencode/opencode.json, written by
+# render.py with "apiKey": "{env:@@TOKEN_VAR@@}" — opencode's own env
+# indirection, so no credential appears on disk or in this file.
+#
+# Package is `opencode-ai` on npm; the project moved to anomalyco/opencode.
+
+name: @@ADAPTER_NAME@@
+description: opencode driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
+version: "1.0"
+
+runner: opencode
+provider: @@PROVIDER@@
+model: @@MODEL@@
+
+# `opencode run` is the one-shot non-interactive mode. The model is addressed
+# as <provider>/<model>, matching the provider id render.py registers.
+invoke: |
+  cd ${WORKSPACE} && \
+  opencode run \
+           --model @@PROVIDER@@/@@MODEL@@ \
+  <<'NEEDLE_PROMPT'
+  ${PROMPT}
+  NEEDLE_PROMPT
+
+input:
+  method: heredoc
+
+output:
+  format: text
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+limits:
+  requests_per_minute: 60
+  max_concurrent: 2

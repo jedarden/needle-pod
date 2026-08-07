@@ -25,11 +25,11 @@ Deployment shape: a `Deployment` running `needle run` as the long-lived internal
 2. **Observability** (before the first worker)
    A local VictoriaLogs instance behind Traefik, with NEEDLE's existing JSONL telemetry routed to stdout for the bundled Vector agent to collect. Rotation is bounded at four layers. See `../notes/deployment-shape-and-lifecycle.md`.
 
-3. **Worker runtime image**
-   A single fat image — needle, `claude`, `git`, `bf`, and toolchains — with versions baked as a floor and declared as a ceiling in a ConfigMap. Built by a `needle-pod-build` WorkflowTemplate on iad-ci, digest-pinned, rebuilt nightly with no version-detection CI. Full rationale in `../notes/image-and-update-strategy.md`.
+3. **Worker runtime image** — **WRITTEN** (`containers/needle-worker/`, 2026-08-06)
+   A single fat image — needle, `bf`, `git`, seven agent harnesses (Claude Code, Codex, opencode, pi, droid, goose, aider) and the Rust/Go/Node/Python toolchains — with versions baked as a floor and declared as a ceiling in a ConfigMap. To be built by a `needle-pod-build` WorkflowTemplate on iad-ci, digest-pinned, rebuilt nightly with no version-detection CI. Rationale in `../notes/image-and-update-strategy.md`; built artifacts and the verified install matrix in `../notes/worker-image.md`. **Not yet built or run.**
 
-4. **Credential wiring**
-   Agent CLI auth and a git push path via OpenBao + `ExternalSecret`, using the Kubernetes-auth pattern already proven on this cluster. Plus a Docker Hub `imagePullSecret`.
+4. **Credential wiring** — **WRITTEN in-image** (cluster half outstanding)
+   A provider is described once in env sourced from a Secret and fanned out into all seven harness config formats by `lib/render.py`; no credential is written to disk. Still outstanding on the cluster side: the OpenBao paths, the `ExternalSecret`s that populate that env, the git push token, and a Docker Hub `imagePullSecret`.
 
 5. **Bead-store / claim coordination across pods**
    The one genuinely unsolved problem. No chosen design. See Open Questions.
@@ -50,9 +50,9 @@ Sequenced so that the first worker runs against working telemetry, and so that t
 
 - [ ] **M0 — Bootstrap `agent-sandbox` as a GitOps cluster.** ArgoCD registration (with the real cluster CA, not `insecure`), ApplicationSet, app-of-apps, Tailscale operator, external-secrets, cert-manager, Traefik.
 - [ ] **M1 — Observability, before any worker.** Local VictoriaLogs behind Traefik with time *and* disk bounded retention; worker JSONL to stdout; OTLP disabled initially. Verify from the EX44 that a throwaway pod's events are queryable *before* M4.
-- [ ] **M2 — Worker runtime image + CI pipeline.**
-- [ ] **M3 — Credential wiring.**
-- [ ] **M4 — One worker, watched.** Single replica, `emptyDir`, one real repo. Requires the empty-pool idle loop and a decision on SIGTERM drain first.
+- [~] **M2 — Worker runtime image + CI pipeline.** Image artifacts written (`containers/needle-worker/`); the `needle-pod-build` WorkflowTemplate and a first successful build are outstanding.
+- [~] **M3 — Credential wiring.** In-image rendering written for all seven harnesses; OpenBao paths and `ExternalSecret`s outstanding.
+- [ ] **M4 — One worker, watched.** Single replica, `emptyDir`, one real repo. The empty-pool idle loop turned out not to be needed (`IdleAction::Wait` is upstream's default and is set explicitly); the SIGTERM drain decision still stands.
 - [ ] **M5 — Scale out.** Multiple replicas, warden node scaling under real load. **Gated on the coordination model.**
 
 Manifests already written into `declarative-config` (`k8s/agent-sandbox/`): `traefik/`, `cert-manager/`, `monitoring/`. They are inert until the M0 ApplicationSet and app-of-apps exist.
@@ -76,4 +76,4 @@ Manifests already written into `declarative-config` (`k8s/agent-sandbox/`): `tra
 
 - **How far does CI-offload actually reduce the local toolchain requirement?** Partially informed: `cargo-remote` only auto-submits on a clean tree, which a worker mid-edit rarely satisfies. Offload narrows what must be baked into the image for *final* verification; it does not remove the need for a real local toolchain in the edit-compile-test loop.
 
-- **Does `mend.max_log_files` get implemented upstream, or does needle-pod bound logs itself?** The config key exists in `config.yaml` but appears nowhere in NEEDLE's source; nothing prunes worker JSONL (2,046 files / 80 MB in ~3 days on the EX44). Short term, bound it at the pod. Long term this belongs in NEEDLE.
+- **Does `mend.max_log_files` get implemented upstream, or does needle-pod bound logs itself?** → **Largely resolved, 2026-08-06.** `mend.max_log_files` is indeed inert, but `telemetry.file_sink.retention_days` is a *different* key that is genuinely implemented — `src/strand/mod.rs:126` reads it and the mend strand prunes agent logs by age. It is set to 3 days in the rendered pod config, with a size-bounded sweep alongside it because day granularity is too coarse for a bounded `emptyDir`. Remaining upstream ask: add a `json` variant to `StdoutFormat`. The stdout sink already exists and works (`src/telemetry/mod.rs:2477-2691`) but emits only human-readable text, which is why the pod still tails JSONL to stdout for Vector; a JSON format would delete that shim.

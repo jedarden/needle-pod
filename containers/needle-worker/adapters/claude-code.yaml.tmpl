@@ -1,0 +1,55 @@
+# NEEDLE adapter — Claude Code against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
+#
+# Rendered by needle-pod at container start. Do not edit in-pod.
+# Placeholders use a doubled-at delimiter so that NEEDLE's own ${WORKSPACE} /
+# ${PROMPT} / ${AGENT_DIR} variables survive rendering untouched.
+#
+# The API token is referenced as $@@TOKEN_VAR@@ — unbraced deliberately. It is
+# expanded by bash at invoke time from the pod's Secret-backed environment, so
+# no credential is ever written into this file. The unbraced form also avoids
+# any chance of NEEDLE's ${...} template substitution consuming it.
+
+name: @@ADAPTER_NAME@@
+description: Claude Code driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
+version: "1.0"
+
+runner: claude
+provider: @@PROVIDER@@
+model: @@MODEL@@
+
+# unset CLAUDECODE prevents nested-session detection when a worker is itself
+# launched from a Claude Code session.
+invoke: |
+  cd ${WORKSPACE} && \
+  unset CLAUDECODE && \
+  ANTHROPIC_BASE_URL=@@BASE_URL@@ \
+  ANTHROPIC_AUTH_TOKEN=$@@TOKEN_VAR@@ \
+  ANTHROPIC_MODEL=@@MODEL@@ \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=@@MODEL@@ \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=@@MODEL@@ \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=@@SMALL_MODEL@@ \
+  CLAUDE_CODE_SUBAGENT_MODEL=@@SMALL_MODEL@@ \
+  DISABLE_AUTOUPDATER=1 \
+  DISABLE_TELEMETRY=1 \
+  claude --print \
+         --dangerously-skip-permissions \
+         --output-format stream-json \
+         --verbose \
+  <<'NEEDLE_PROMPT' | ${AGENT_DIR}/stream-parser.sh
+  ${PROMPT}
+  NEEDLE_PROMPT
+
+input:
+  method: heredoc
+
+output:
+  format: stream-json
+  streaming_enabled: true
+  success_codes: [0]
+  retry_codes: [1]
+  # 137 is SIGKILL — the OOM path, and the one to expect first on a 6.3 GiB node.
+  fail_codes: [2, 137]
+
+limits:
+  requests_per_minute: 120
+  max_concurrent: 4
