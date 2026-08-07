@@ -84,22 +84,35 @@ RUN set -eux; \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# rustup-init takes --component once per component; a bare list makes it treat
+# the second name as a positional argument and abort.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- \
         -y --no-modify-path --profile minimal \
         --default-toolchain "${RUST_VERSION}" \
-        --component clippy rustfmt \
+        --component clippy --component rustfmt \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
     && rustc --version && cargo --version
 
 # --- 6. Agent harnesses distributed via npm ----------------------------------
-# pi requires --ignore-scripts (its own containerization guide specifies this).
+# --ignore-scripts is applied to pi ONLY, per its own containerization guide.
+#
+# It must NOT be applied to claude-code or opencode: both ship a postinstall
+# that fetches their native binary, and skipping it leaves a stub that reports a
+# healthy npm version while failing at run time with "native binary not
+# installed". That failure is invisible to a version manifest, which is why the
+# build asserts each one actually executes below.
 RUN set -eux; \
-    npm install -g --ignore-scripts \
+    npm install -g \
         "@anthropic-ai/claude-code${CLAUDE_CODE_VERSION:+@$CLAUDE_CODE_VERSION}" \
         "@openai/codex${CODEX_VERSION:+@$CODEX_VERSION}" \
-        "opencode-ai${OPENCODE_VERSION:+@$OPENCODE_VERSION}" \
+        "opencode-ai${OPENCODE_VERSION:+@$OPENCODE_VERSION}"; \
+    npm install -g --ignore-scripts \
         "@earendil-works/pi-coding-agent${PI_VERSION:+@$PI_VERSION}"; \
-    npm cache clean --force
+    npm cache clean --force; \
+    claude --version; \
+    codex --version; \
+    opencode --version; \
+    pi --version
 
 # --- 7. Agent harnesses distributed via shell installer ----------------------
 # goose: CONFIGURE=false suppresses the interactive provider wizard. The
@@ -113,11 +126,28 @@ RUN set -eux; \
       bash -c 'curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash'; \
     goose --version
 
+# droid installs to "$HOME/.local/bin", so HOME is pointed at /usr/local to land
+# it somewhere every user can execute. Installing as root into /root/.local/bin
+# would leave it unreadable by the non-root `needle` user at runtime.
+#
+# NOTE: the installer picks an AVX2 or a -baseline build by reading the BUILD
+# host's /proc/cpuinfo. If the build host has AVX2 and a worker node does not,
+# droid will fault at dispatch rather than at build. The harness probe is what
+# catches that; it is why the probe runs a real dispatch rather than --help.
+RUN set -eux; \
+    mkdir -p /opt/factory; \
+    HOME=/opt/factory sh -c 'curl -fsSL https://app.factory.ai/cli | sh'; \
+    install -m 0755 /opt/factory/.local/bin/droid /usr/local/bin/droid; \
+    droid --version
+
 # --- 8. aider ----------------------------------------------------------------
-RUN uv tool install --python 3.12 --force \
+# UV_TOOL_BIN_DIR puts the launcher on the shared PATH and UV_TOOL_DIR keeps the
+# managed venv out of /root, so aider is runnable by the needle user.
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+    uv tool install --python 3.12 --force \
         "aider-chat${AIDER_VERSION:+==$AIDER_VERSION}" \
-    && ln -sf /root/.local/bin/aider /usr/local/bin/aider 2>/dev/null || true
-ENV PATH=/root/.local/bin:$PATH
+    && chmod -R a+rX /opt/uv-tools \
+    && aider --version
 
 # --- 9. bf (bead-forge) ------------------------------------------------------
 # bead-forge publishes no binary release on either host — the Forgejo API
@@ -134,7 +164,10 @@ RUN set -eux; \
 # --- 10. Non-root user -------------------------------------------------------
 # uid 1000 matches the fleet convention. Everything the worker writes lives
 # under /home/needle, which is where the emptyDir gets mounted.
-RUN useradd --create-home --shell /bin/bash --uid 1000 needle \
+# Ubuntu 24.04 ships a default `ubuntu` account already holding uid 1000, so it
+# is removed first — the fleet convention is that the workload owns uid 1000.
+RUN userdel --remove ubuntu 2>/dev/null || true; \
+    useradd --create-home --shell /bin/bash --uid 1000 needle \
     && mkdir -p /home/needle/.needle /home/needle/workspaces /etc/needle-pod \
     && chown -R needle:needle /home/needle
 
