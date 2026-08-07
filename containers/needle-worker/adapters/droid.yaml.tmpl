@@ -1,41 +1,20 @@
 # NEEDLE adapter — droid (Factory CLI) against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
-# Rendered by needle-pod at container start. Do not edit in-pod.
-#
 # Provider wiring lives in ~/.factory/settings.json, written by render.py with
-# "apiKey": "${@@TOKEN_VAR@@}" — Factory's own env indirection. settings.json is
-# used rather than the legacy config.json because only settings.json supports
-# ${VAR} expansion.
+# "apiKey": "${...}" indirection. settings.json is used rather than the legacy
+# config.json because only settings.json expands ${VAR}.
+#
+# `--auto high` is required: droid exec defaults to read-only tiered autonomy,
+# which cannot edit files or run builds.
 
 name: @@ADAPTER_NAME@@
 description: droid driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: droid
+agent_cli: droid
+version_command: "droid --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && droid exec --model @@MODEL@@ --auto high < {prompt_file}"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-# `droid exec` is the headless mode. Autonomy is tiered and defaults to
-# read-only, so --auto high is required for a worker that must actually edit
-# files and run builds.
-invoke: |
-  cd ${WORKSPACE} && \
-  droid exec \
-        --model @@MODEL@@ \
-        --auto high \
-  <<'NEEDLE_PROMPT'
-  ${PROMPT}
-  NEEDLE_PROMPT
-
-input:
-  method: heredoc
-
-output:
-  format: text
-  success_codes: [0]
-  retry_codes: [1]
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 60
-  max_concurrent: 2

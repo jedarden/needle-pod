@@ -9,7 +9,12 @@
 . "${NEEDLE_POD_LIB}/common.sh"
 
 render_needle_config() {
-    local config="${NEEDLE_HOME}/config.yaml"
+    # ~/.config/needle/config.yaml is the global config NEEDLE actually loads
+    # (ConfigLoader, src/config/mod.rs:2095). NOT ~/.needle/config.yaml — that
+    # path exists on the bare-metal box as a stale leftover and is read by
+    # nothing, so writing there renders a perfectly valid config that the
+    # worker silently ignores while falling back to every default.
+    local config="${NEEDLE_CONFIG_FILE:-$HOME/.config/needle/config.yaml}"
     local workspaces_dir="${NEEDLE_POD_WORKSPACES_DIR:-$HOME/workspaces}"
     local default_agent="${NEEDLE_POD_DEFAULT_AGENT:?default agent not resolved}"
 
@@ -41,7 +46,14 @@ render_needle_config() {
     # every event in `kubectl logs`. See docs/notes/worker-image.md.
     local stdout_enabled="${NEEDLE_POD_STDOUT_SINK_ENABLED:-false}"
 
-    local heartbeat_max_age="${NEEDLE_POD_HEARTBEAT_MAX_AGE:-900}"
+    # How long before mend considers a claim stuck and reclaims it.
+    #
+    # NOT `heartbeat_max_age`. That key appears in the bare-metal config.yaml
+    # and in this project's earlier notes, but it exists nowhere in NEEDLE's
+    # source — it is inert, exactly like mend.max_log_files. Setting it looked
+    # like a preemption mitigation while doing nothing at all. stuck_threshold_secs
+    # is the real control (src/config/mod.rs, MendConfig).
+    local stuck_threshold="${NEEDLE_POD_STUCK_THRESHOLD_SECS:-900}"
 
     mkdir -p "$(dirname "$config")"
 
@@ -58,14 +70,24 @@ render_needle_config() {
         echo
         echo "worker:"
         echo "  max_workers: ${max_workers}"
-        echo "  default_agent: ${default_agent}"
+        # NOTE: `worker.default_agent` is NOT a config field. It appears in the
+        # bare-metal config.yaml but no such key exists on WorkerConfig — the
+        # adapter is chosen by `agent.default` below. Setting it here would be
+        # inert, and the worker would fall back to the built-in default
+        # ("claude"), claim a bead, then die at dispatch with "configured agent
+        # adapter 'claude' not found" — leaving the bead claimed.
         echo "  idle_action: ${idle_action}"
         echo "  idle_backoff_min: ${NEEDLE_POD_IDLE_BACKOFF_MIN:-30}"
         echo "  idle_backoff_max: ${NEEDLE_POD_IDLE_BACKOFF_MAX:-300}"
         echo
-        echo "explore:"
-        echo "  enabled: true"
-        echo "  workspace_root: ${workspaces_dir}"
+        # explore and mend are nested under `strands:` — NOT top level. A
+        # top-level `explore:` block is silently ignored by serde, which leaves
+        # workspace_root defaulting to $HOME; discovery then reports count=0
+        # and the worker idles with a fully hydrated repo one directory away.
+        echo "strands:"
+        echo "  explore:"
+        echo "    enabled: true"
+        echo "    workspace_root: ${workspaces_dir}"
 
         # Empty `workspaces` means recursive auto-discovery under
         # workspace_root — the fleet default, and what preserves roaming.
@@ -76,12 +98,12 @@ render_needle_config() {
         if [ -n "$pinned" ]; then
             log_warn "worker is pinned to an explicit workspace list; roaming disabled" \
                 --arg workspaces "$(echo "$pinned" | tr '\n' ' ')"
-            echo "  workspaces:"
+            echo "    workspaces:"
             while IFS= read -r w; do
-                [ -n "$w" ] && echo "    - ${workspaces_dir}/${w}"
+                [ -n "$w" ] && echo "      - ${workspaces_dir}/${w}"
             done <<< "$pinned"
         else
-            echo "  workspaces: []"
+            echo "    workspaces: []"
         fi
 
         echo
@@ -96,16 +118,20 @@ render_needle_config() {
         echo "    color: never"
         echo "  otlp_sink:"
         echo "    enabled: ${otlp_enabled}"
-        echo
-        echo "mend:"
-        # Lower than the bare-metal 3600. A preempted pod cannot drain its
-        # in-flight dispatch (the supervisor breaks its loop without awaiting
-        # children), so the bead stays claimed until the stale reaper releases
-        # it. Shorter heartbeat_max_age is the mitigation available from
-        # config alone; the real fix is an upstream drain.
-        echo "  heartbeat_max_age: ${heartbeat_max_age}"
+        # Also under strands:. A preempted pod cannot drain its in-flight
+        # dispatch (the supervisor breaks its loop without awaiting children),
+        # so the bead stays claimed until mend reclaims it. Shortening that
+        # window is the only mitigation available from config alone; the real
+        # fix is an upstream drain.
+        echo "  mend:"
+        echo "    stuck_threshold_secs: ${stuck_threshold}"
         echo
         echo "agent:"
+        # THE key that selects the adapter. Must name a YAML file that
+        # render.py actually wrote into adapters_dir.
+        echo "  default: ${default_agent}"
+        echo "  adapters_dir: ${NEEDLE_ADAPTERS_DIR:-$HOME/.config/needle/adapters}"
+        echo "  timeout: ${NEEDLE_POD_AGENT_TIMEOUT:-3600}"
         echo "  routing:"
         echo "    rules:"
         echo "      - match_model: \".*\""
@@ -116,5 +142,6 @@ render_needle_config() {
         --arg path "$config" \
         --arg default_agent "$default_agent" \
         --arg idle_action "$idle_action" \
+        --arg workspace_root "$workspaces_dir" \
         --arg retention_days "$log_retention_days"
 }

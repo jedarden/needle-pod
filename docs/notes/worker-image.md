@@ -168,6 +168,60 @@ If no workspace ends up usable, that is logged as a warning in its own right —
 the all-clones-succeeded / nothing-usable run is otherwise indistinguishable
 from a healthy start.
 
+## Three vestigial paths on the bare-metal box that cost a day
+
+The EX44 carries a working NEEDLE install *and* an older parallel one. Reading
+the wrong half produced a worker that started cleanly, hydrated its repo,
+claimed a bead — and then died at dispatch, leaving the bead claimed. Each
+restart burned another lease.
+
+| What NEEDLE actually reads | The vestigial twin (reads as authoritative, is ignored) |
+|---|---|
+| `~/.config/needle/config.yaml` | `~/.needle/config.yaml` |
+| `~/.config/needle/adapters/` | `~/.needle/agents/` |
+| `agent.default`, `strands.explore.*`, `strands.mend.*` | `worker.default_agent`, top-level `explore:`, `mend.heartbeat_max_age` |
+
+Adapter **format** differs too, not just location. `AgentAdapter` requires
+`agent_cli` and `invoke_template`; the vestigial files use `runner` and
+`invoke`, with `${WORKSPACE}`/`${PROMPT}` rather than `{workspace}` and
+`{prompt_file}`. An adapter in the old shape fails to deserialise and is simply
+absent from the dispatcher's map — reported as "configured agent adapter not
+found", whose message then points at `~/.needle/agents/`, the very directory
+that does not matter.
+
+Dead config keys confirmed by grepping the source, all of which look like
+working controls: `worker.default_agent`, `mend.heartbeat_max_age`,
+`mend.max_log_files`. The live analogues are `agent.default`,
+`strands.mend.stuck_threshold_secs`, and `telemetry.file_sink.retention_days`.
+
+The lesson worth keeping: on this box, verify a NEEDLE config key against
+`src/config/mod.rs` before trusting it, because the bare-metal config.yaml
+contains keys that NEEDLE has never read.
+
+## First real deployment — measured, 2026-08-07
+
+Running on agent-sandbox, image 0.1.6, single replica, GLM-4.7 direct (not via
+zai-proxy, which is Tailscale-only and unreachable from this cluster).
+
+| | |
+|---|---|
+| Memory | **836 MiB peak** of a 5 GiB limit |
+| Disk (emptyDir) | 149 MiB with one repo cloned |
+| Processes | 13 |
+| Image pull | 65 s cold (1.3 GB compressed, 5.53 GB on disk) |
+| Restarts | 0 |
+| Agent dispatches | exit_code 0, 33 s and 82 s, outcome success, flushed to JSONL |
+
+**The memory estimate in the plan was ~3x too pessimistic.** `deployment-shape-and-lifecycle.md`
+assumed 2–3 GiB per worker and therefore 2–3 workers per node. At 836 MiB peak
+the same node holds roughly 6 — though that is an idle-to-light-dispatch
+figure, and a worker running a real `cargo build` will be far heavier. Treat 836
+MiB as the floor, not the working set.
+
+Also confirmed live: mend reclaims orphaned leases on its own. Beads left
+claimed by the crash-looping pods were released by `mend.orphaned_lock_removed`
+without intervention.
+
 ## The probe
 
 NEEDLE's own `run_probe` (`src/dispatch/mod.rs:1549-1562`) runs

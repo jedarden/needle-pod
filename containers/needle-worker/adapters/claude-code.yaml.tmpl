@@ -1,55 +1,33 @@
 # NEEDLE adapter — Claude Code against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
 # Rendered by needle-pod at container start. Do not edit in-pod.
-# Placeholders use a doubled-at delimiter so that NEEDLE's own ${WORKSPACE} /
-# ${PROMPT} / ${AGENT_DIR} variables survive rendering untouched.
 #
-# The API token is referenced as $@@TOKEN_VAR@@ — unbraced deliberately. It is
-# expanded by bash at invoke time from the pod's Secret-backed environment, so
-# no credential is ever written into this file. The unbraced form also avoids
-# any chance of NEEDLE's ${...} template substitution consuming it.
+# FORMAT NOTE: the field names here are the ones NEEDLE's AgentAdapter struct
+# actually deserialises — `agent_cli` and `invoke_template`, not `runner` and
+# `invoke`. The `runner:`/`invoke:` shape found in ~/.needle/agents on the
+# bare-metal box is a vestigial format that nothing reads; an adapter written
+# that way fails to load and the worker dies at dispatch with "configured
+# agent adapter not found" AFTER it has already claimed a bead.
+#
+# Placeholders are {workspace}, {prompt_file}, {bead_id}, {model} (NEEDLE's) and
+# the doubled-at form (needle-pod's, substituted at container start).
+#
+# The token is referenced as $@@TOKEN_VAR@@ and expanded by the shell at invoke
+# time from the pod's Secret-backed environment — no credential on disk.
 
 name: @@ADAPTER_NAME@@
 description: Claude Code driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: claude
+agent_cli: claude
+version_command: "claude --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && git rev-parse HEAD > .needle-predispatch-sha 2>/dev/null; unset CLAUDECODE; @@ANTHROPIC_ENV@@ claude --print --verbose --output-format stream-json --include-partial-messages --model @@MODEL@@ --dangerously-skip-permissions < {prompt_file} | cat"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-# unset CLAUDECODE prevents nested-session detection when a worker is itself
-# launched from a Claude Code session.
-invoke: |
-  cd ${WORKSPACE} && \
-  unset CLAUDECODE && \
-  ANTHROPIC_BASE_URL=@@BASE_URL@@ \
-  ANTHROPIC_AUTH_TOKEN=$@@TOKEN_VAR@@ \
-  ANTHROPIC_MODEL=@@MODEL@@ \
-  ANTHROPIC_DEFAULT_OPUS_MODEL=@@MODEL@@ \
-  ANTHROPIC_DEFAULT_SONNET_MODEL=@@MODEL@@ \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL=@@SMALL_MODEL@@ \
-  CLAUDE_CODE_SUBAGENT_MODEL=@@SMALL_MODEL@@ \
-  DISABLE_AUTOUPDATER=1 \
-  DISABLE_TELEMETRY=1 \
-  claude --print \
-         --dangerously-skip-permissions \
-         --output-format stream-json \
-         --verbose \
-  <<'NEEDLE_PROMPT' | ${AGENT_DIR}/stream-parser.sh
-  ${PROMPT}
-  NEEDLE_PROMPT
-
-input:
-  method: heredoc
-
-output:
-  format: stream-json
-  streaming_enabled: true
-  success_codes: [0]
-  retry_codes: [1]
-  # 137 is SIGKILL — the OOM path, and the one to expect first on a 6.3 GiB node.
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 120
-  max_concurrent: 4
+token_extraction:
+  method: json_field
+  input_path: "result.usage.input_tokens"
+  output_path: "result.usage.output_tokens"
+output_transform: needle-transform-claude

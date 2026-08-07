@@ -1,45 +1,22 @@
 # NEEDLE adapter — Codex against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
-# Rendered by needle-pod at container start. Do not edit in-pod.
+# Codex resolves its provider table from ~/.codex/config.toml (written by
+# render.py with env_key indirection), so no credential appears here.
 #
-# Codex reads its provider table from ~/.codex/config.toml, which render.py
-# writes with `env_key = "@@TOKEN_VAR@@"` — so Codex resolves the token from the
-# environment itself and nothing here carries a credential.
-#
-# The package is @openai/codex (scoped). The unscoped `codex` on npm is an
-# unrelated 2012 tool.
+# CAVEAT: codex 0.147 accepts only wire_api = "responses", meaning it needs an
+# endpoint implementing OpenAI's Responses API. Most BYOK/subscription
+# gateways do not provide one, so this adapter may be unusable depending on the
+# provider — render.py warns at start when that is the case.
 
 name: @@ADAPTER_NAME@@
 description: Codex driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: codex
+agent_cli: codex
+version_command: "codex --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && CODEX_DISABLE_UPDATE_CHECK=1 @@OPENAI_ENV@@ codex exec --model @@MODEL@@ --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox < {prompt_file}"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-# `codex exec` is the non-interactive mode. --skip-git-repo-check keeps it from
-# refusing to run in a workspace that is not a git repo (canary dirs, scratch).
-# Sandboxing is off because the pod *is* the sandbox.
-invoke: |
-  cd ${WORKSPACE} && \
-  CODEX_DISABLE_UPDATE_CHECK=1 \
-  codex exec \
-        --model @@MODEL@@ \
-        --skip-git-repo-check \
-        --dangerously-bypass-approvals-and-sandbox \
-  <<'NEEDLE_PROMPT'
-  ${PROMPT}
-  NEEDLE_PROMPT
-
-input:
-  method: heredoc
-
-output:
-  format: text
-  success_codes: [0]
-  retry_codes: [1]
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 60
-  max_concurrent: 2
+output_transform: needle-transform-codex

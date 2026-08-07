@@ -1,47 +1,16 @@
 # NEEDLE adapter — aider against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
-# Rendered by needle-pod at container start. Do not edit in-pod.
-#
-# aider resolves keys from conventional provider environment variables and
-# model names through litellm-style prefixes, so the model is addressed as
-# anthropic/<model> or openai/<model>. Defaults also live in ~/.aider.conf.yml,
-# written by render.py.
-#
 # --no-auto-commits is not optional: NEEDLE owns the commit boundary, and aider
 # committing on its own would race the worker's own git handling.
 
 name: @@ADAPTER_NAME@@
 description: aider driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: aider
+agent_cli: aider
+version_command: "aider --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && @@ANTHROPIC_ENV@@ @@OPENAI_ENV@@ aider --message-file {prompt_file} --yes-always --no-pretty --no-auto-commits --no-analytics --no-check-update --no-show-model-warnings"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-invoke: |
-  cd ${WORKSPACE} && \
-  ANTHROPIC_API_KEY=$@@TOKEN_VAR@@ \
-  OPENAI_API_KEY=$@@TOKEN_VAR@@ \
-  OPENAI_API_BASE=@@CHAT_BASE_URL@@ \
-  aider --message \
-        "${PROMPT}" \
-        --yes-always \
-        --no-pretty \
-        --no-auto-commits \
-        --no-analytics \
-        --no-check-update \
-        --no-show-model-warnings
-
-input:
-  method: args
-  arg_flag: --message
-
-output:
-  format: text
-  success_codes: [0]
-  retry_codes: [1]
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 60
-  max_concurrent: 2

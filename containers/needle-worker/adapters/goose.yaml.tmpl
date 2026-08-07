@@ -1,44 +1,16 @@
 # NEEDLE adapter — goose against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
-# Rendered by needle-pod at container start. Do not edit in-pod.
-#
 # GOOSE_DISABLE_KEYRING is mandatory in a pod: goose otherwise tries to reach a
-# D-Bus keyring that does not exist and falls over. Only whether the variable is
-# set matters, not its value. With the keyring disabled goose uses file-based
-# secret storage under ~/.config/goose.
+# D-Bus keyring that does not exist. Only whether the variable is set matters.
 
 name: @@ADAPTER_NAME@@
 description: goose driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: goose
+agent_cli: goose
+version_command: "goose --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && GOOSE_DISABLE_KEYRING=1 GOOSE_PROVIDER='@@PROVIDER@@' GOOSE_MODEL='@@MODEL@@' @@ANTHROPIC_ENV@@ @@OPENAI_ENV@@ goose run --no-session --instructions {prompt_file}"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-# `goose run --text` is the one-shot non-interactive form.
-invoke: |
-  cd ${WORKSPACE} && \
-  GOOSE_DISABLE_KEYRING=1 \
-  GOOSE_PROVIDER=@@PROVIDER@@ \
-  GOOSE_MODEL=@@MODEL@@ \
-  ANTHROPIC_API_KEY=$@@TOKEN_VAR@@ \
-  OPENAI_API_KEY=$@@TOKEN_VAR@@ \
-  OPENAI_BASE_URL=@@CHAT_BASE_URL@@ \
-  goose run \
-        --no-session \
-        --text \
-  "${PROMPT}"
-
-input:
-  method: args
-  arg_flag: --text
-
-output:
-  format: text
-  success_codes: [0]
-  retry_codes: [1]
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 60
-  max_concurrent: 2

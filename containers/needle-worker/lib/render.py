@@ -333,7 +333,14 @@ def render_adapters(harnesses: list[str], providers: list[Provider]) -> list[str
     the image. Templates use @@NAME@@ placeholders — NEEDLE's own ${WORKSPACE}
     and ${PROMPT} must survive substitution untouched.
     """
-    agents_dir = NEEDLE_HOME / "agents"
+    # ~/.config/needle/adapters is what NEEDLE actually loads (it is
+    # agent.adapters_dir, and the live bare-metal config points there).
+    # NOT ~/.needle/agents — that directory exists on the bare-metal box, is
+    # full of adapters, and is read by nothing. Writing there produces a worker
+    # that claims a bead and then dies at dispatch with "configured agent
+    # adapter not found", leaving the bead claimed. The error message itself
+    # names ~/.needle/agents, which is what makes this so easy to get wrong.
+    agents_dir = Path(os.environ.get("NEEDLE_ADAPTERS_DIR", str(HOME / ".config" / "needle" / "adapters")))
     agents_dir.mkdir(parents=True, exist_ok=True)
     written = []
 
@@ -346,16 +353,44 @@ def render_adapters(harnesses: list[str], providers: list[Provider]) -> list[str
 
         for p in providers:
             name = f"{harness}-{p.name}"
+            # Whole env-assignment blocks, not bare values. invoke_template is a
+            # single-line shell string, so an unset base URL substituted into
+            # `ANTHROPIC_BASE_URL='@@BASE_URL@@'` would export an empty endpoint
+            # and override the harness's own default. Emitting the entire
+            # assignment (or nothing) makes that unrepresentable.
+            # Bare $VAR, not "$VAR". invoke_template is a double-quoted YAML
+            # scalar, so an inner double quote terminates it and the adapter
+            # fails to parse. Provider tokens are alphanumeric, so there is no
+            # word-splitting risk from leaving them unquoted.
+            anthropic_env = [
+                f"ANTHROPIC_AUTH_TOKEN=${p.token_var}",
+                f"ANTHROPIC_API_KEY=${p.token_var}",
+                f"ANTHROPIC_MODEL='{p.model}'",
+                f"ANTHROPIC_DEFAULT_OPUS_MODEL='{p.model}'",
+                f"ANTHROPIC_DEFAULT_SONNET_MODEL='{p.model}'",
+                f"ANTHROPIC_DEFAULT_HAIKU_MODEL='{p.small_model}'",
+                f"CLAUDE_CODE_SUBAGENT_MODEL='{p.small_model}'",
+                "DISABLE_AUTOUPDATER=1",
+                "DISABLE_TELEMETRY=1",
+            ]
+            if p.base_url:
+                anthropic_env.insert(0, f"ANTHROPIC_BASE_URL='{p.base_url}'")
+
+            openai_env = [f"OPENAI_API_KEY=${p.token_var}", f"OPENAI_MODEL='{p.model}'"]
+            if p.has_openai_wire:
+                openai_env.insert(0, f"OPENAI_BASE_URL='{p.chat_completions_url}'")
+
             subs = {
                 "ADAPTER_NAME": name,
                 "PROVIDER": p.name,
                 "PROVIDER_DISPLAY": p.display_name,
                 "MODEL": p.model,
                 "SMALL_MODEL": p.small_model,
-                "BASE_URL": p.base_url,
-                "CHAT_BASE_URL": p.chat_completions_url,
                 "TOKEN_VAR": p.token_var,
                 "MAX_OUTPUT_TOKENS": p.max_output_tokens,
+                "TIMEOUT_SECS": os.environ.get("NEEDLE_POD_AGENT_TIMEOUT", "3600"),
+                "ANTHROPIC_ENV": " ".join(anthropic_env),
+                "OPENAI_ENV": " ".join(openai_env),
             }
             body = template
             for key, value in subs.items():

@@ -1,46 +1,18 @@
 # NEEDLE adapter — pi against @@PROVIDER_DISPLAY@@ (@@MODEL@@)
 #
-# Rendered by needle-pod at container start. Do not edit in-pod.
-#
-# pi reads conventional provider environment variables (its own containerization
-# guide passes ANTHROPIC_API_KEY straight into the container), so the token is
-# referenced here as $@@TOKEN_VAR@@ and expanded by bash at invoke time.
-#
-# Package is @earendil-works/pi-coding-agent — NOT @mariozechner/pi, which is an
-# unrelated vLLM pod manager that installs a `pi-pods` binary.
+# pi reads conventional provider env vars (its own containerization guide passes
+# ANTHROPIC_API_KEY straight through). Package is
+# @earendil-works/pi-coding-agent — NOT @mariozechner/pi, an unrelated vLLM
+# pod manager whose binary is `pi-pods`.
 
 name: @@ADAPTER_NAME@@
 description: pi driving @@PROVIDER_DISPLAY@@ @@MODEL@@ (needle-pod)
-version: "1.0"
-
-runner: pi
+agent_cli: pi
+version_command: "pi --version"
+input_method:
+  method: stdin
+invoke_template: "cd {workspace} && @@ANTHROPIC_ENV@@ @@OPENAI_ENV@@ pi -p --model @@MODEL@@ < {prompt_file}"
+environment: {}
+timeout_secs: @@TIMEOUT_SECS@@
 provider: @@PROVIDER@@
 model: @@MODEL@@
-
-# `pi -p` is print mode. `--mode json` emits an event stream instead; switch
-# output.format to json below if that parse is preferred.
-invoke: |
-  cd ${WORKSPACE} && \
-  ANTHROPIC_BASE_URL=@@BASE_URL@@ \
-  ANTHROPIC_API_KEY=$@@TOKEN_VAR@@ \
-  ANTHROPIC_AUTH_TOKEN=$@@TOKEN_VAR@@ \
-  OPENAI_BASE_URL=@@CHAT_BASE_URL@@ \
-  OPENAI_API_KEY=$@@TOKEN_VAR@@ \
-  pi -p \
-     --model @@MODEL@@ \
-  <<'NEEDLE_PROMPT'
-  ${PROMPT}
-  NEEDLE_PROMPT
-
-input:
-  method: heredoc
-
-output:
-  format: text
-  success_codes: [0]
-  retry_codes: [1]
-  fail_codes: [2, 137]
-
-limits:
-  requests_per_minute: 60
-  max_concurrent: 2

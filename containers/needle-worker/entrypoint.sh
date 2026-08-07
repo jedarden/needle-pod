@@ -117,7 +117,30 @@ main() {
 
     verify_harnesses
 
-    log_info "handing off to needle run"
+    # Belt-and-braces over the rendered config file. NEEDLE applies
+    # NEEDLE_<PATH> overrides with __ as the separator, and both of these are
+    # in its allowlist. Setting them here means the two values a pod cannot
+    # function without survive even if the config file is ever written to the
+    # wrong path again — which is exactly the bug that made the first
+    # deployment idle with a fully hydrated repo one directory away.
+    export NEEDLE_STRANDS__EXPLORE__ENABLED=true
+    export NEEDLE_STRANDS__EXPLORE__WORKSPACE_ROOT="${NEEDLE_POD_WORKSPACES_DIR:-$HOME/workspaces}"
+    export NEEDLE_AGENT__DEFAULT="${NEEDLE_POD_DEFAULT_AGENT}"
+
+    # Fail here rather than at dispatch. Without this, a wrong adapter name
+    # only surfaces after the worker has already CLAIMED a bead — it then dies
+    # and leaves that bead claimed until mend reclaims it, burning a lease per
+    # restart.
+    local adapters_dir="${NEEDLE_ADAPTERS_DIR:-$HOME/.config/needle/adapters}"
+    if [ ! -f "${adapters_dir}/${NEEDLE_POD_DEFAULT_AGENT}.yaml" ]; then
+        die "default adapter YAML is missing; refusing to start and orphan beads" \
+            --arg adapter "$NEEDLE_POD_DEFAULT_AGENT" \
+            --arg expected "${adapters_dir}/${NEEDLE_POD_DEFAULT_AGENT}.yaml"
+    fi
+
+    log_info "handing off to needle run" \
+        --arg workspace_root "$NEEDLE_STRANDS__EXPLORE__WORKSPACE_ROOT" \
+        --arg agent "$NEEDLE_AGENT__DEFAULT"
 
     # exec, deliberately: needle becomes the signalled process so its own
     # SIGTERM handler runs directly, with no shell in between to swallow it.
