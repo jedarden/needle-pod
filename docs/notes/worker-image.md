@@ -132,6 +132,42 @@ The entrypoint mitigates only by lowering `heartbeat_max_age` from 3600 to 900.
 On `ch.vs1.large-ord` at a 0.01 bid this path fires routinely, so it remains the
 most valuable upstream fix — and it lives in the NEEDLE repo, not this one.
 
+## Bead-store hydration — the gap that made pods non-viable
+
+Found by testing a real clone rather than reasoning about it, 2026-08-06.
+
+`beads.db` is gitignored across the whole fleet (verified: 0 tracked `.db`
+files in NEEDLE, ARMOR, vista, bead-forge), so a fresh clone carries only the
+`issues.jsonl` checkpoint. Two measured consequences:
+
+1. **`bf ready` silently auto-creates an empty database.** On a fresh clone of
+   `bead-forge` it reported "No ready candidates" and exited 0, while the
+   checkpoint held 2,333 beads, 354 of them open. Every worker pod would have
+   idled with work sitting right there, and the telemetry would have looked
+   healthy.
+2. **Flushing that empty database destroys the checkpoint.** `bf sync
+   --flush-only` on the same clone took `issues.jsonl` from 2,333 beads to 0 —
+   "Flushed 0 beads to JSONL", a 2,333-line deletion. Worker pods hold a push
+   credential, so an unhydrated clone is one flush from destroying a repo's
+   bead history and pushing the result.
+
+`clone_workspaces` therefore hydrates every fresh clone with `bf sync
+--import-only` — note that `bf sync --import`, which appears in older notes, is
+not a valid flag — verifies the resulting store is non-empty against the
+checkpoint, and **quarantines** any workspace that fails by renaming `.beads`
+to `.beads.quarantined`. Explore keys on that directory's presence, so a
+quarantined repo becomes invisible instead of dangerous, and the clone survives
+for `kubectl exec` triage.
+
+A pre-existing clone (a restart on a persisted volume) is deliberately *not*
+re-imported: rebuilding the store from the checkpoint is precisely what destroys
+beads created since the last flush. It is only hydrated when the store is
+already empty, which is the unsafe state.
+
+If no workspace ends up usable, that is logged as a warning in its own right —
+the all-clones-succeeded / nothing-usable run is otherwise indistinguishable
+from a healthy start.
+
 ## The probe
 
 NEEDLE's own `run_probe` (`src/dispatch/mod.rs:1549-1562`) runs
