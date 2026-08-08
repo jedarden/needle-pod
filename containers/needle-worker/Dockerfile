@@ -211,6 +211,22 @@ RUN /usr/local/bin/needle-pod-record-versions > /etc/needle-pod/versions.json \
 
 USER needle
 WORKDIR /home/needle
+
+# Build-parallelism caps. These are the single largest lever on peak memory,
+# and without them a worker's footprint is unbounded: the steady-state figure
+# is well under 1 GiB, but an uncapped `cargo build -j$(nproc)` or a parallel
+# link step spikes multiples of that and the container is OOM-killed (exit 137)
+# rather than degrading. Bare metal caps these at 2 for the same reason.
+#
+# Override per-Deployment if a node profile justifies it — but raise the memory
+# limit in the same commit, not separately.
+ENV CARGO_BUILD_JOBS=2 \
+    RUST_TEST_THREADS=2 \
+    MAKEFLAGS=-j2 \
+    GOMAXPROCS=2 \
+    GOFLAGS=-p=2 \
+    NPM_CONFIG_JOBS=2
+
 ENV HOME=/home/needle \
     NEEDLE_HOME=/home/needle/.needle \
     NEEDLE_POD_WORKSPACES_DIR=/home/needle/workspaces \
