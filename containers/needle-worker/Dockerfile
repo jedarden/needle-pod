@@ -192,6 +192,7 @@ RUN set -eux; \
 # is removed first — the fleet convention is that the workload owns uid 1000.
 RUN userdel --remove ubuntu 2>/dev/null || true; \
     useradd --create-home --shell /bin/bash --uid 1000 needle \
+    && passwd -d needle \
     && mkdir -p /home/needle/.needle /home/needle/workspaces /etc/needle-pod \
     && chown -R needle:needle /home/needle
 
