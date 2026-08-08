@@ -36,9 +36,16 @@ render_needle_config() {
     # granularity is too coarse for a bounded emptyDir.
     local log_retention_days="${NEEDLE_POD_LOG_RETENTION_DAYS:-3}"
 
-    # OTLP off: there is no collector inside the pod, and localhost:4318 would
-    # just generate connection errors. JSONL events carry the failure signal.
+    # OTLP remains opt-in so an image can run before its cluster-local gateway
+    # exists. When enabled, pods send to that gateway; the gateway owns the
+    # cross-cluster credential and adds the trusted deployment identity.
     local otlp_enabled="${NEEDLE_POD_OTLP_ENABLED:-false}"
+    local otlp_endpoint="${NEEDLE_POD_OTLP_ENDPOINT:-http://needle-otel-gateway:4318}"
+    local otlp_protocol="${NEEDLE_POD_OTLP_PROTOCOL:-http}"
+    local otlp_compression="${NEEDLE_POD_OTLP_COMPRESSION:-gzip}"
+    local otlp_auth_env="${NEEDLE_POD_OTLP_AUTH_ENV:-}"
+    local deployment_cluster="${NEEDLE_POD_DEPLOYMENT_CLUSTER:-agent-sandbox}"
+    local worker_pool="${NEEDLE_POD_WORKER_POOL:-default}"
 
     # stdout_sink stays off deliberately. It is implemented, but emits
     # human-readable text (Minimal/Normal/Verbose) rather than JSON, so it is
@@ -118,6 +125,18 @@ render_needle_config() {
         echo "    color: never"
         echo "  otlp_sink:"
         echo "    enabled: ${otlp_enabled}"
+        echo "    endpoint: \"${otlp_endpoint}\""
+        echo "    protocol: \"${otlp_protocol}\""
+        echo "    compression: \"${otlp_compression}\""
+        echo "    resource_attributes:"
+        echo "      - \"deployment.cluster=${deployment_cluster}\""
+        echo "      - \"needle.worker.pool=${worker_pool}\""
+        if [ -n "$otlp_auth_env" ]; then
+            echo "    headers:"
+            echo "      - \"Authorization: env:${otlp_auth_env}\""
+        else
+            echo "    headers: []"
+        fi
         # Also under strands:. A preempted pod cannot drain its in-flight
         # dispatch (the supervisor breaks its loop without awaiting children),
         # so the bead stays claimed until mend reclaims it. Shortening that
@@ -143,5 +162,9 @@ render_needle_config() {
         --arg default_agent "$default_agent" \
         --arg idle_action "$idle_action" \
         --arg workspace_root "$workspaces_dir" \
-        --arg retention_days "$log_retention_days"
+        --arg retention_days "$log_retention_days" \
+        --arg otlp_enabled "$otlp_enabled" \
+        --arg otlp_endpoint "$otlp_endpoint" \
+        --arg deployment_cluster "$deployment_cluster" \
+        --arg worker_pool "$worker_pool"
 }
