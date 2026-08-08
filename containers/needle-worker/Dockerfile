@@ -179,7 +179,7 @@ RUN set -eux; \
 # `bead` binary coexists with `bf`: existing generic workspaces keep using bf,
 # while the dedicated bead-rs workspace explicitly selects bead.
 RUN set -eux; \
-    git clone https://git.ardenone.com/jedarden/bead-rs.git /tmp/bead-rs; \
+    git clone https://github.com/jedarden/bead-rs.git /tmp/bead-rs; \
     git -C /tmp/bead-rs checkout --quiet "${BEAD_RS_REF}"; \
     cargo install --locked --path /tmp/bead-rs --root /usr/local; \
     rm -rf /tmp/bead-rs "$CARGO_HOME"/registry "$CARGO_HOME"/git; \
