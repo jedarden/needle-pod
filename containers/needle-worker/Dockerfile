@@ -37,6 +37,10 @@ ARG AIDER_VERSION=
 # critical_path_cache 11 times, HEAD only 6. Verified working; bump
 # deliberately, after testing `bf ready` on a fresh clone.
 ARG BEAD_FORGE_REF=9cd859023d793a00775bd8f300b9b1a62a1e0f47
+# Clean-room bead-rs bootstrap MVP, pinned to the plan revision that records
+# the final NEEDLE handoff. This is the native provider used by the dedicated
+# bead-rs development workspace; keep it independent from bead-forge.
+ARG BEAD_RS_REF=5c4016fe24f9ceff184bbe7b790a36f8ac6d896a
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -46,12 +50,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ripgrep/fd/jq are here because agent harnesses shell out to them constantly;
 # build-essential + pkg-config + libssl-dev are the floor for cargo builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl wget git git-lfs openssh-client gnupg \
+        ca-certificates curl wget git git-lfs openssh-client openssh-server gnupg \
         build-essential pkg-config libssl-dev \
         python3 python3-venv python3-dev \
         ripgrep fd-find jq unzip xz-utils file procps less \
         sqlite3 tini \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && mkdir -p /run/sshd \
     && rm -rf /var/lib/apt/lists/*
 
 # --- 2. Node.js --------------------------------------------------------------
@@ -168,6 +173,17 @@ RUN set -eux; \
     cargo install --locked --path /tmp/bead-forge --root /usr/local; \
     rm -rf /tmp/bead-forge "$CARGO_HOME"/registry "$CARGO_HOME"/git; \
     bf --version
+
+# --- 9a. bead-rs native provider --------------------------------------------
+# Build from the Forgejo source of truth at an immutable commit. The resulting
+# `bead` binary coexists with `bf`: existing generic workspaces keep using bf,
+# while the dedicated bead-rs workspace explicitly selects bead.
+RUN set -eux; \
+    git clone https://git.ardenone.com/jedarden/bead-rs.git /tmp/bead-rs; \
+    git -C /tmp/bead-rs checkout --quiet "${BEAD_RS_REF}"; \
+    cargo install --locked --path /tmp/bead-rs --root /usr/local; \
+    rm -rf /tmp/bead-rs "$CARGO_HOME"/registry "$CARGO_HOME"/git; \
+    bead --version
 
 # --- 10. Non-root user -------------------------------------------------------
 # uid 1000 matches the fleet convention. Everything the worker writes lives
