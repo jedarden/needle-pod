@@ -1,7 +1,10 @@
 # needle-pod
 
+> **Internal deployment experiment, public for reference.** There is no
+> published image or supported installation path yet.
+
 Runs NEEDLE workers as pods on Rackspace Spot compute that
-[warden](https://git.ardenone.com/jedarden/warden) elastically scales.
+[warden](https://github.com/jedarden/warden) elastically scales.
 
 warden solves "how much compute exists"; needle-pod solves "what runs on it."
 Two independent scaling axes: warden scales nodes, needle-pod's replica count
