@@ -37,10 +37,25 @@ ARG AIDER_VERSION=
 # critical_path_cache 11 times, HEAD only 6. Verified working; bump
 # deliberately, after testing `bf ready` on a fresh clone.
 ARG BEAD_FORGE_REF=9cd859023d793a00775bd8f300b9b1a62a1e0f47
-# Clean-room bead-rs bootstrap MVP, pinned to the plan revision that records
-# the final NEEDLE handoff. This is the native provider used by the dedicated
-# bead-rs development workspace; keep it independent from bead-forge.
-ARG BEAD_RS_REF=5c4016fe24f9ceff184bbe7b790a36f8ac6d896a
+# bead-rs 0.2.6 -- the version the rest of the fleet runs, and the exact commit
+# codinghome's own `bead` binary was built from.
+#
+# Was pinned to the clean-room bootstrap MVP (5c4016fe), which builds `bead
+# 0.1.0`. That is roughly nine months behind the fleet and writes an entirely
+# different SQLite schema: 0.1.0 creates issues/dirty_issues/velocity_stats,
+# while 0.2.x expects issue_data/issue_extensions/checkpoint_state and a
+# `workspace` table. So every command in a 0.2.x workspace died with
+# "Workspace error: Failed to load workspace UUID: no such table: workspace",
+# and the worker reported `no_ready_candidates` instead of an error -- it sat
+# EXHAUSTED_IDLE for 13h against a NEEDLE workspace holding 100 ready beads
+# (2026-09-13, agent-sandbox). The documented recovery does not apply either:
+# `--restore-into-empty` and `--actor` do not exist in 0.1.0.
+#
+# This is the same failure the BEAD_FORGE_REF note above describes for bf --
+# a schema-mismatched store surfacing as "no work" rather than as a fault.
+# Bump deliberately, and verify `bead list --ready` on a fresh clone of a
+# bead-rs workspace before shipping.
+ARG BEAD_RS_REF=d9a32b3c96e824a0f17f02e35a87a3728afa6110
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
