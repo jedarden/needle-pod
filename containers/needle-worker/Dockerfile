@@ -21,15 +21,34 @@ FROM ubuntu:24.04
 # Pin any of these at build time to reproduce an exact image. Empty means
 # "resolve the current release at build time", which is what the nightly
 # rebuild does (Decision 4 — no version-detection CI).
-ARG NEEDLE_VERSION=
+# Pinned 2026-09-13. These were ALL empty, and empty means "whatever is latest
+# at build time" -- NEEDLE_VERSION resolves via releases/latest, GO_VERSION via
+# go.dev/VERSION, and the npm/pip ones omit the version suffix entirely. So the
+# image was not reproducible: any change to any pin rebuilt every component at
+# that day's latest.
+#
+# That is not theoretical. Bumping BEAD_RS_REF alone (0.1.11 -> 0.1.12) carried
+# needle from 0.2.16 to 0.6.0 -- four minor versions -- and 0.6.0 rejects the
+# `telemetry.mend` key lib/needle-config.sh emits, so every worker went
+# CrashLoopBackOff on "invalid YAML in config file". It also explains why
+# BEAD_RS_REF sat nine months stale: rebuilding was unpredictable, so nobody did.
+#
+# Values are the ones 0.1.11 actually shipped, read out of the running image
+# rather than guessed. Bump them one at a time, deliberately.
+#
+# needle in particular is only the BAKED FLOOR -- the in-pod update path drops a
+# newer binary at the versioned :stable layout without an image rebuild (see the
+# install block below). Moving this pin means also updating
+# lib/needle-config.sh to whatever schema that version accepts.
+ARG NEEDLE_VERSION=v0.2.16
 ARG NODE_MAJOR=24
-ARG GO_VERSION=
+ARG GO_VERSION=go1.26.5
 ARG RUST_VERSION=stable
-ARG CLAUDE_CODE_VERSION=
-ARG CODEX_VERSION=
-ARG OPENCODE_VERSION=
-ARG PI_VERSION=
-ARG AIDER_VERSION=
+ARG CLAUDE_CODE_VERSION=2.1.226
+ARG CODEX_VERSION=0.147.0
+ARG OPENCODE_VERSION=1.18.15
+ARG PI_VERSION=0.84.1
+ARG AIDER_VERSION=0.86.2
 # Pinned, NOT main. Building from bead-forge HEAD produced a bf that imports
 # beads but never creates the critical_path_cache / blocked_issues_cache
 # tables, so every `bf ready` fails with "no such table" and the worker finds
